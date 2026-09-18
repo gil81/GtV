@@ -369,16 +369,22 @@ class PlaybackViewModel
             viewModelScope.launch(ExceptionHandler()) { controllerViewState.observe() }
 
             val intros =
-                // If not resuming playback & cinema mode is enabled, get potential intros
+                // If not resuming playback & cinema mode is enabled, get potential intros.
+                // Failure to load optional intros must not prevent normal playback.
                 if (positionMs == 0L && preferences.appPreferences.playbackPreferences.cinemaMode) {
-                    api.userLibraryApi
-                        .getIntros(
-                            itemId = playlistItem.id,
-                            userId = serverRepository.currentUser?.id,
-                        ).content.items
-                        .map {
-                            PlaylistItem.Intro(BaseItem(it))
-                        }
+                    try {
+                        api.userLibraryApi
+                            .getIntros(
+                                itemId = playlistItem.id,
+                                userId = serverRepository.currentUser?.id,
+                            ).content.items
+                            .map {
+                                PlaylistItem.Intro(BaseItem(it))
+                            }
+                    } catch (ex: Exception) {
+                        Timber.w(ex, "Failed to load intros; continuing playback without intros")
+                        emptyList()
+                    }
                 } else {
                     emptyList()
                 }
