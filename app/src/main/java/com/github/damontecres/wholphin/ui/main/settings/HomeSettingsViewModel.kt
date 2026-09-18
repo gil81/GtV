@@ -717,6 +717,10 @@ class HomeSettingsViewModel
                                     it.config
                                 }
 
+                                is HomeRowConfig.CustomEndpoint -> {
+                                    it.config
+                                }
+
                                 is RecentlyAdded -> {
                                     val collectionType = getCollectionType(it.config.parentId)
                                     val viewOptions = preset.getByCollectionType(collectionType)

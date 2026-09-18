@@ -173,7 +173,7 @@ sealed interface HomeRowConfig {
         override fun updateViewOptions(viewOptions: HomeRowViewOptions): ByParent = this.copy(viewOptions = viewOptions)
     }
 
-    /**
+        /**
      * An arbitrary [GetItemsRequest] allowing to query for anything
      */
     @Serializable
@@ -183,9 +183,33 @@ sealed interface HomeRowConfig {
         val getItems: GetItemsRequest,
         override val viewOptions: HomeRowViewOptions = HomeRowViewOptions(),
     ) : HomeRowConfig {
-        override fun updateViewOptions(viewOptions: HomeRowViewOptions): GetItems = this.copy(viewOptions = viewOptions)
+        override fun updateViewOptions(viewOptions: HomeRowViewOptions): GetItems =
+            this.copy(viewOptions = viewOptions)
+    }
+
+    /**
+     * Items fetched from an arbitrary Jellyfin endpoint that returns
+     * a QueryResult<BaseItemDto>.
+     */
+    @Serializable
+    @SerialName("CustomEndpoint")
+    data class CustomEndpoint(
+        val endpoint: String,
+        val title: String,
+        val headers: List<KeyValueEntry>? = null,
+        val query: List<KeyValueEntry>? = null,
+        override val viewOptions: HomeRowViewOptions = HomeRowViewOptions(),
+    ) : HomeRowConfig {
+        override fun updateViewOptions(viewOptions: HomeRowViewOptions): CustomEndpoint =
+            this.copy(viewOptions = viewOptions)
     }
 }
+
+    @Serializable
+    data class KeyValueEntry(
+        val key: String,
+        val value: String,
+)
 
 /**
  * Root class for home page settings

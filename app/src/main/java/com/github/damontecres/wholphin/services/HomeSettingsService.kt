@@ -1,5 +1,7 @@
 package com.github.damontecres.wholphin.services
 
+import org.jellyfin.sdk.api.client.HttpMethod
+import org.jellyfin.sdk.model.api.BaseItemDtoQueryResult
 import android.content.Context
 import androidx.annotation.StringRes
 import com.github.damontecres.wholphin.R
@@ -450,6 +452,14 @@ class HomeSettingsService
                     HomeRowConfigDisplay(
                         id,
                         name,
+                        config,
+                    )
+                }
+
+                is HomeRowConfig.CustomEndpoint -> {
+                    HomeRowConfigDisplay(
+                        id,
+                        StringStringProvider(config.title),
                         config,
                     )
                 }
@@ -969,6 +979,46 @@ class HomeSettingsService
                         )
                     }
                 }
+
+                is HomeRowConfig.CustomEndpoint -> {
+                    val query =
+                        buildMap<String, Any> {
+                            row.query?.forEach { entry ->
+                                put(entry.key, entry.value)
+                            }
+
+                            if (keys.none { it.equals("userId", ignoreCase = true) }) {
+                                put("userId", userDto.id.toString())
+                            }
+                        }
+
+                    
+
+                    val response =
+                        api.request(
+                            method = HttpMethod.GET,
+                            pathTemplate = row.endpoint,
+                            pathParameters = emptyMap(),
+                            queryParameters = query,
+                        )
+
+                    val result =
+                        response.createContent<BaseItemDtoQueryResult>()
+
+                    result.items
+                        .map { BaseItem(it, row.viewOptions.useSeries) }
+                        .let {
+                            Success(
+                                StringStringProvider(row.title),
+                                it,
+                                row.viewOptions,
+                                rowType = row,
+                                showViewMore = false,
+                            )
+                        }
+                }
+
+            
 
                 is HomeRowConfig.Favorite -> {
                     val title =
