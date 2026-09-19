@@ -243,8 +243,48 @@ class HomeSettingsService
                 if (settings != null) {
                     Timber.v("Found settings")
                     // Resolve
-                    val resolvedRows =
-                        settings.rows.mapIndexed { index, config ->
+        val migratedRows =
+            settings.rows
+                .filterNot {
+                    it is HomeRowConfig.CustomEndpoint &&
+                        it.endpoint == "/DynamicLibrary/Home/TrendingMovies"
+                }
+                .let { rows ->
+                    var result = rows
+
+                    if (
+                        result.none {
+                            it is HomeRowConfig.CustomEndpoint &&
+                                it.endpoint == "/DynamicLibrary/Home/NewReleaseMovies"
+                        }
+                    ) {
+                        result =
+                            result +
+                                HomeRowConfig.CustomEndpoint(
+                                    title = "New Release Movies",
+                                    endpoint = "/DynamicLibrary/Home/NewReleaseMovies",
+                                )
+                    }
+
+                    if (
+                        result.none {
+                            it is HomeRowConfig.CustomEndpoint &&
+                                it.endpoint == "/DynamicLibrary/Home/NewReleaseTV"
+                        }
+                    ) {
+                        result =
+                            result +
+                                HomeRowConfig.CustomEndpoint(
+                                    title = "New Release TV",
+                                    endpoint = "/DynamicLibrary/Home/NewReleaseTV",
+                                )
+                    }
+
+                    result
+                }
+
+        val resolvedRows =
+            migratedRows.mapIndexed { index, config ->
                             resolve(index, config)
                         }
                     HomePageResolvedSettings(userId, resolvedRows)
@@ -262,10 +302,50 @@ class HomeSettingsService
             userId: UUID,
             settings: HomePageSettings,
         ) {
-            val resolvedRows =
-                settings.rows.mapIndexed { index, config ->
-                    resolve(index, config)
+        val migratedRows =
+            settings.rows
+                .filterNot {
+                    it is HomeRowConfig.CustomEndpoint &&
+                        it.endpoint == "/DynamicLibrary/Home/TrendingMovies"
                 }
+                .let { rows ->
+                    var result = rows
+
+                    if (
+                        result.none {
+                            it is HomeRowConfig.CustomEndpoint &&
+                                it.endpoint == "/DynamicLibrary/Home/NewReleaseMovies"
+                        }
+                    ) {
+                        result =
+                            result +
+                                HomeRowConfig.CustomEndpoint(
+                                    title = "New Release Movies",
+                                    endpoint = "/DynamicLibrary/Home/NewReleaseMovies",
+                                )
+                    }
+
+                    if (
+                        result.none {
+                            it is HomeRowConfig.CustomEndpoint &&
+                                it.endpoint == "/DynamicLibrary/Home/NewReleaseTV"
+                        }
+                    ) {
+                        result =
+                            result +
+                                HomeRowConfig.CustomEndpoint(
+                                    title = "New Release TV",
+                                    endpoint = "/DynamicLibrary/Home/NewReleaseTV",
+                                )
+                    }
+
+                    result
+                }
+
+        val resolvedRows =
+            migratedRows.mapIndexed { index, config ->
+                            resolve(index, config)
+                        }
             val resolvedSettings = HomePageResolvedSettings(userId, resolvedRows)
             currentSettings.update { resolvedSettings }
         }
@@ -316,7 +396,29 @@ class HomeSettingsService
                         config = HomeRowConfig.ContinueWatchingCombined(),
                     ),
                 )
-            val rowConfig = continueWatchingRow + includedIds
+val customRows =
+            listOf(
+                HomeRowConfigDisplay(
+                    id = includedIds.size + 2,
+                    title = StringStringProvider("New Release Movies"),
+                    config =
+                        HomeRowConfig.CustomEndpoint(
+                            title = "New Release Movies",
+                            endpoint = "/DynamicLibrary/Home/NewReleaseMovies",
+                        ),
+                ),
+                HomeRowConfigDisplay(
+                    id = includedIds.size + 3,
+                    title = StringStringProvider("New Release TV"),
+                    config =
+                        HomeRowConfig.CustomEndpoint(
+                            title = "New Release TV",
+                            endpoint = "/DynamicLibrary/Home/NewReleaseTV",
+                        ),
+                ),
+            )
+
+        val rowConfig = continueWatchingRow + customRows + includedIds
             return HomePageResolvedSettings(userId, rowConfig)
         }
 
@@ -1364,3 +1466,9 @@ fun viewOptionsForCollectionType(collectionType: CollectionType?): HomeRowViewOp
             HomeRowViewOptions()
         }
     }
+
+
+
+
+
+
