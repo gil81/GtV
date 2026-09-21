@@ -1,0 +1,489 @@
+diff -ruN '--exclude=.kotlin' /mnt/data/clientfix2_baseline/CLIENTFIX3-NOTES.md /mnt/data/clientfix3_work/CLIENTFIX3-NOTES.md
+--- /mnt/data/clientfix2_baseline/CLIENTFIX3-NOTES.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/clientfix3_work/CLIENTFIX3-NOTES.md	2026-09-20 21:31:12.370233515 +0000
+@@ -0,0 +1,56 @@
++# GtV 1.2.5 clientfix3
++
++Server requirement: keep Dynamic Library 1.2.5 unchanged.
++
++## Fixes
++
++- Keeps clientfix2 focused-episode enrichment/source picker behavior unchanged.
++- Re-resolves audio/subtitle preferences after selected-source PlaybackInfo returns real ffprobe MediaStreams.
++- Explicit saved/user audio selection wins over container default/forced disposition.
++- If there is no explicit audio selection, real-stream language preference is resolved before falling back to default/first track.
++- Audio-only track changes no longer require subtitle selection to succeed.
++- Subtitle-only track changes no longer require audio selection to succeed.
++- Audio-only changes preserve the current subtitle override, including an already-loaded external subtitle.
++- Embedded subtitle changes apply in-place and preserve audio playback.
++- Adds diagnostic logging for probed audio metadata and direct track-change results.
++- Adds regression tests verifying audio-only/subtitle-only changes preserve the other override in shared ExoPlayer groups.
++
++## Windows build
++
++From the extracted source root in PowerShell:
++
++```powershell
++$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
++$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
++.\gradlew clean assembleDefaultDebug --max-workers=1 "-Dorg.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8"
++```
++
++ARM64 output should be under:
++
++```text
++app\build\outputs\apk\default\debug\
++```
++
++## Install
++
++```powershell
++adb connect 192.168.68.107:5555
++adb install -r <arm64-debug-apk>
++adb shell monkey -p com.github.damontecres.wholphin.debug 1
++```
++
++## Useful log filter
++
++```powershell
++adb logcat -c
++adb logcat | Select-String "Resolved probed source tracks|Probed audio|Track selection|Direct track change|Changes tracks|Changing audio|Changing subtitle|Enriched focused episode"
++```
++
++Expected for an English switch from a Polish/Italian default source:
++
++```text
++Changing audio track to 2
++Track selection kind=audio ... jellyfinLanguage=eng ... matchedTrackIndex=1 ...
++Direct track change requestedType=AUDIO ... audioResult=SELECTED ...
++Changes tracks audio=2 ... requestedType=AUDIO overrideApplied=true
++```
+diff -ruN '--exclude=.kotlin' /mnt/data/clientfix2_baseline/app/src/main/java/com/github/damontecres/wholphin/ui/playback/PlaybackViewModel.kt /mnt/data/clientfix3_work/app/src/main/java/com/github/damontecres/wholphin/ui/playback/PlaybackViewModel.kt
+--- /mnt/data/clientfix2_baseline/app/src/main/java/com/github/damontecres/wholphin/ui/playback/PlaybackViewModel.kt	2026-09-20 19:54:29.000000000 +0000
++++ /mnt/data/clientfix3_work/app/src/main/java/com/github/damontecres/wholphin/ui/playback/PlaybackViewModel.kt	2026-09-20 21:29:18.826784598 +0000
+@@ -618,6 +618,7 @@
+             positionMs: Long = 0,
+             enableDirectPlay: Boolean = !this.forceTranscoding,
+             enableDirectStream: Boolean = !this.forceTranscoding,
++            changedType: MediaStreamType? = null,
+         ): Unit =
+             withContext(WholphinDispatchers.IO) {
+                 val itemId = item.id
+@@ -635,6 +636,7 @@
+                                 currentPlayback = currentPlayback,
+                                 audioIndex = audioIndex,
+                                 subtitleIndex = subtitleIndex,
++                                changedType = changedType,
+                             )
+                         if (wasSuccessful) return@withContext
+                     }
+@@ -689,6 +691,72 @@
+                 }
+                 val source = response.mediaSources.firstOrNull()
+                 source?.let { source ->
++                    // Item-detail AIOStreams sources are intentionally lightweight and may not
++                    // contain the selected source's real audio/subtitle tracks. Once PlaybackInfo
++                    // returns the ffprobe-backed MediaSource, resolve preferences again against
++                    // those real streams. Explicit in-player changes are preserved via changedType.
++                    var playbackAudioIndex = audioIndex
++                    var playbackSubtitleIndex = subtitleIndex
++                    if (changedType == null) {
++                        val savedPlayback = state.value.currentItemPlayback
++                        val savedAudio =
++                            savedPlayback?.takeIf { saved ->
++                                saved.audioIndexEnabled &&
++                                    source.mediaStreams.orEmpty().any {
++                                        it.type == MediaStreamType.AUDIO && it.index == saved.audioIndex
++                                    }
++                            }
++                        val preferredAudio =
++                            streamChoiceService.chooseAudioStream(
++                                source = source,
++                                seriesId = item.data.seriesId,
++                                itemPlayback = savedAudio,
++                                plc = null,
++                                prefs = preferences,
++                            )
++                        playbackAudioIndex = preferredAudio?.index ?: playbackAudioIndex
++
++                        val preferredSubtitle =
++                            streamChoiceService.chooseSubtitleStream(
++                                source = source,
++                                audioStream = preferredAudio,
++                                seriesId = item.data.seriesId,
++                                itemPlayback = savedPlayback,
++                                plc = null,
++                                prefs = preferences,
++                            )
++                        playbackSubtitleIndex =
++                            when {
++                                savedPlayback?.subtitleIndex == TrackIndex.DISABLED -> TrackIndex.DISABLED
++                                preferredSubtitle != null -> preferredSubtitle.index
++                                else -> playbackSubtitleIndex
++                            }
++
++                        Timber.d(
++                            "Resolved probed source tracks source=%s requestedAudio=%s effectiveAudio=%s requestedSubtitle=%s effectiveSubtitle=%s",
++                            source.id,
++                            audioIndex,
++                            playbackAudioIndex,
++                            subtitleIndex,
++                            playbackSubtitleIndex,
++                        )
++                    }
++
++                    source.mediaStreams.orEmpty()
++                        .filter { it.type == MediaStreamType.AUDIO }
++                        .forEach { stream ->
++                            Timber.d(
++                                "Probed audio source=%s index=%s language=%s default=%s forced=%s codec=%s title=%s",
++                                source.id,
++                                stream.index,
++                                stream.language,
++                                stream.isDefault,
++                                stream.isForced,
++                                stream.codec,
++                                stream.title,
++                            )
++                        }
++
+                     val mediaUrl =
+                         if (source.supportsDirectPlay) {
+                             if (source.isRemote && source.path.isNotNullOrBlank()) {
+@@ -735,8 +803,8 @@
+                     val externalSubtitleCount = source.externalSubtitlesCount
+ 
+                     val externalSubtitle =
+-                        source.findExternalSubtitle(subtitleIndex)?.let {
+-                            Timber.v("Using externally delivered subtitle tracks %s", subtitleIndex)
++                        source.findExternalSubtitle(playbackSubtitleIndex)?.let {
++                            Timber.v("Using externally delivered subtitle tracks %s", playbackSubtitleIndex)
+                             it.deliveryUrl?.let { deliveryUrl ->
+                                 var flags = 0
+                                 if (it.isForced) flags = flags.or(C.SELECTION_FLAG_FORCED)
+@@ -754,7 +822,7 @@
+                         }
+ 
+                     Timber.v(
+-                        "subtitleIndex=$subtitleIndex, externalSubtitleCount=$externalSubtitleCount, externalSubtitle=$externalSubtitle",
++                        "subtitleIndex=$playbackSubtitleIndex, externalSubtitleCount=$externalSubtitleCount, externalSubtitle=$externalSubtitle",
+                     )
+ 
+                     val mediaItem =
+@@ -787,8 +855,8 @@
+                             playSessionId = response.playSessionId,
+                             liveStreamId = source.liveStreamId,
+                             mediaSourceInfo = source,
+-                            audioIndex = audioIndex ?: TrackIndex.DISABLED,
+-                            subtitleIndex = subtitleIndex ?: TrackIndex.DISABLED,
++                            audioIndex = playbackAudioIndex ?: TrackIndex.DISABLED,
++                            subtitleIndex = playbackSubtitleIndex ?: TrackIndex.DISABLED,
+                         )
+ 
+                     // The item-details MediaSource is intentionally only a lightweight
+@@ -861,21 +929,22 @@
+                                     changeStreams(
+                                         item = item,
+                                         sourceId = sourceId,
+-                                        audioIndex = audioIndex,
+-                                        subtitleIndex = subtitleIndex,
++                                        audioIndex = playbackAudioIndex,
++                                        subtitleIndex = playbackSubtitleIndex,
+                                         positionMs = positionMs,
+                                         enableDirectPlay = false,
+                                         enableDirectStream = true,
++                                        changedType = changedType,
+                                     )
+                                 }
+                             }
+                         }
+                         val onTracksChangedListener =
+-                            if (transcodeType == PlayMethod.DIRECT_PLAY && (audioIndex != null || subtitleIndex != null)) {
++                            if (transcodeType == PlayMethod.DIRECT_PLAY && (playbackAudioIndex != null || playbackSubtitleIndex != null)) {
+                                 TracksChangedListener(
+                                     player = player,
+-                                    audioIndex = audioIndex,
+-                                    subtitleIndex = subtitleIndex,
++                                    audioIndex = playbackAudioIndex,
++                                    subtitleIndex = playbackSubtitleIndex,
+                                     source = source,
+                                     onFailure = onFailure,
+                                 )
+@@ -883,7 +952,7 @@
+                                 TracksChangedListener(
+                                     player = player,
+                                     audioIndex = null, // Do not manually activate audio
+-                                    subtitleIndex = subtitleIndex,
++                                    subtitleIndex = playbackSubtitleIndex,
+                                     source = source,
+                                     onFailure = onFailure,
+                                 )
+@@ -895,7 +964,7 @@
+                             this@PlaybackViewModel.trackChangeListener = it
+                         }
+ 
+-                        if (subtitleIndex != null) {
++                        if (playbackSubtitleIndex != null) {
+                             viewModelScope.launchIO { loadSubtitleDelay() }
+                         }
+                     }
+@@ -911,6 +980,7 @@
+             currentPlayback: CurrentPlayback,
+             audioIndex: Int?,
+             subtitleIndex: Int?,
++            changedType: MediaStreamType? = null,
+         ): Boolean =
+             withContext(WholphinDispatchers.IO) {
+                 Timber.v("changeStreams direct play")
+@@ -931,35 +1001,65 @@
+ 
+                 val source = currentPlayback.mediaSourceInfo
+                 val externalSubtitle = source.findExternalSubtitle(subtitleIndex)
++                val changeAudio = changedType == null || changedType == MediaStreamType.AUDIO
++                val changeSubtitle = changedType == null || changedType == MediaStreamType.SUBTITLE
+ 
+-                if (externalSubtitle == null) {
+-                    val result =
+-                        withContext(WholphinDispatchers.Main) {
+-                            TrackSelectionUtils.createTrackSelections(
+-                                onMain { player.trackSelectionParameters },
+-                                onMain { player.currentTracks },
+-                                audioIndex,
+-                                subtitleIndex,
+-                                source,
+-                            )
+-                        }
+-                    if (result.bothSelected) {
+-                        onMain { player.trackSelectionParameters = result.trackSelectionParameters }
+-                        Timber.d("Changes tracks audio=$audioIndex, subtitle=$subtitleIndex")
+-                        _state.update {
+-                            it.copy(
+-                                currentPlayback =
+-                                    (it.currentPlayback ?: currentPlayback).copy(
+-                                        tracks = checkForSupport(onMain { player.currentTracks }),
+-                                    ),
+-                            )
+-                        }
+-                        loadSubtitleDelay()
+-                        return@withContext true
+-                    }
+-                } else {
++                // External subtitles still need the media item rebuilt when the subtitle itself
++                // is changing. They must not block an otherwise in-place audio change.
++                if (externalSubtitle != null && changeSubtitle) {
+                     Timber.v("changeStreams direct play, external subtitle was requested")
++                    return@withContext false
++                }
++
++                val result =
++                    withContext(WholphinDispatchers.Main) {
++                        TrackSelectionUtils.createTrackSelections(
++                            onMain { player.trackSelectionParameters },
++                            onMain { player.currentTracks },
++                            audioIndex,
++                            subtitleIndex,
++                            source,
++                            selectAudio = changeAudio,
++                            selectSubtitle = changeSubtitle,
++                        )
++                    }
++                val audioOk = !changeAudio || result.audioSelected
++                val subtitleOk = !changeSubtitle || result.subtitleSelected
++                Timber.d(
++                    "Direct track change requestedType=%s audioIndex=%s subtitleIndex=%s audioResult=%s subtitleResult=%s",
++                    changedType,
++                    audioIndex,
++                    subtitleIndex,
++                    result.audio,
++                    result.subtitle,
++                )
++                if (audioOk && subtitleOk) {
++                    onMain { player.trackSelectionParameters = result.trackSelectionParameters }
++                    Timber.d(
++                        "Changes tracks audio=%s subtitle=%s requestedType=%s overrideApplied=true",
++                        audioIndex,
++                        subtitleIndex,
++                        changedType,
++                    )
++                    _state.update {
++                        it.copy(
++                            currentPlayback =
++                                (it.currentPlayback ?: currentPlayback).copy(
++                                    audioIndex = if (changeAudio) audioIndex ?: currentPlayback.audioIndex else currentPlayback.audioIndex,
++                                    subtitleIndex = if (changeSubtitle) subtitleIndex ?: currentPlayback.subtitleIndex else currentPlayback.subtitleIndex,
++                                    tracks = checkForSupport(onMain { player.currentTracks }),
++                                ),
++                        )
++                    }
++                    if (changeSubtitle) loadSubtitleDelay()
++                    return@withContext true
+                 }
++                Timber.w(
++                    "Direct track change not applied requestedType=%s audioOk=%s subtitleOk=%s",
++                    changedType,
++                    audioOk,
++                    subtitleOk,
++                )
+                 return@withContext false
+             }
+ 
+@@ -992,6 +1092,7 @@
+                         subtitleIndex = resolvedSubtitleIndex,
+                         positionMs = onMain { player.currentPosition },
+                         enableDirectPlay = true,
++                        changedType = MediaStreamType.AUDIO,
+                     )
+                 } else {
+                     Timber.w("Trying to change audio, but currentPlayback is null")
+@@ -1028,6 +1129,7 @@
+                         subtitleIndex = resolvedIndex,
+                         positionMs = onMain { player.currentPosition },
+                         enableDirectPlay = true,
++                        changedType = MediaStreamType.SUBTITLE,
+                     )
+                 } else {
+                     Timber.w("Trying to change subtitle, but currentPlayback is null")
+diff -ruN '--exclude=.kotlin' /mnt/data/clientfix2_baseline/app/src/main/java/com/github/damontecres/wholphin/ui/playback/TrackSelectionUtils.kt /mnt/data/clientfix3_work/app/src/main/java/com/github/damontecres/wholphin/ui/playback/TrackSelectionUtils.kt
+--- /mnt/data/clientfix2_baseline/app/src/main/java/com/github/damontecres/wholphin/ui/playback/TrackSelectionUtils.kt	2026-09-20 20:50:16.000000000 +0000
++++ /mnt/data/clientfix3_work/app/src/main/java/com/github/damontecres/wholphin/ui/playback/TrackSelectionUtils.kt	2026-09-20 21:29:20.376321820 +0000
+@@ -25,10 +25,14 @@
+         audioIndex: Int?,
+         subtitleIndex: Int?,
+         source: MediaSourceInfo,
++        selectAudio: Boolean = true,
++        selectSubtitle: Boolean = true,
+     ): TrackSelectionResult {
+         val paramsBuilder = trackSelectionParams.buildUpon()
+         val subtitleSelected =
+-            if (subtitleIndex != null && subtitleIndex >= 0) {
++            if (!selectSubtitle) {
++                TrackSelected.SELECTED
++            } else if (subtitleIndex != null && subtitleIndex >= 0) {
+                 val subtitleIsExternal = source.findExternalSubtitle(subtitleIndex) != null
+                 val chosenTrack =
+                     if (subtitleIsExternal) {
+@@ -70,7 +74,9 @@
+             }
+ 
+         val audioSelected =
+-            if (audioIndex != null && audioIndex >= 0) {
++            if (!selectAudio) {
++                TrackSelected.SELECTED
++            } else if (audioIndex != null && audioIndex >= 0) {
+                 val playerIndex = getPlayerIndex(audioIndex, source, MediaStreamType.AUDIO)
+                 val chosenTrack =
+                     if (playerIndex != null) {
+diff -ruN '--exclude=.kotlin' /mnt/data/clientfix2_baseline/app/src/test/java/com/github/damontecres/wholphin/test/TestTrackSelection.kt /mnt/data/clientfix3_work/app/src/test/java/com/github/damontecres/wholphin/test/TestTrackSelection.kt
+--- /mnt/data/clientfix2_baseline/app/src/test/java/com/github/damontecres/wholphin/test/TestTrackSelection.kt	2026-09-20 20:50:01.000000000 +0000
++++ /mnt/data/clientfix3_work/app/src/test/java/com/github/damontecres/wholphin/test/TestTrackSelection.kt	2026-09-20 21:30:47.404864605 +0000
+@@ -3,6 +3,7 @@
+ import androidx.media3.common.C
+ import androidx.media3.common.Format
+ import androidx.media3.common.TrackGroup
++import androidx.media3.common.TrackSelectionOverride
+ import androidx.media3.common.TrackSelectionParameters
+ import androidx.media3.common.Tracks
+ import com.github.damontecres.wholphin.data.model.TrackIndex
+@@ -865,4 +866,102 @@
+         }
+     }
+     return null
++    @Test
++    fun `audio-only change preserves subtitle override in shared groups`() {
++        val source =
++            TestTracks
++                .Builder()
++                .addVideo()
++                .addAudio(2)
++                .addSubtitle(2)
++                .buildMediaSourceInfo()
++        val audioFormats =
++            arrayOf(
++                Format.Builder().setId("1").setLanguage("pol").setSampleMimeType("audio/eac3").build(),
++                Format.Builder().setId("2").setLanguage("eng").setSampleMimeType("audio/eac3").build(),
++            )
++        val subtitleFormats =
++            arrayOf(
++                Format.Builder().setId("3").setLanguage("ita").setSampleMimeType("text/vtt").build(),
++                Format.Builder().setId("4").setLanguage("eng").setSampleMimeType("text/vtt").build(),
++            )
++        val audioGroup = TrackGroup(*audioFormats)
++        val subtitleGroup = TrackGroup(*subtitleFormats)
++        val tracks =
++            Tracks(
++                listOf(
++                    Tracks.Group(audioGroup, false, intArrayOf(C.FORMAT_HANDLED, C.FORMAT_HANDLED), booleanArrayOf(false, false)),
++                    Tracks.Group(subtitleGroup, false, intArrayOf(C.FORMAT_HANDLED, C.FORMAT_HANDLED), booleanArrayOf(false, false)),
++                ),
++            )
++        val existing =
++            TrackSelectionParameters.Builder()
++                .setOverrideForType(TrackSelectionOverride(subtitleGroup, 1))
++                .build()
++
++        val result =
++            TrackSelectionUtils.createTrackSelections(
++                trackSelectionParams = existing,
++                tracks = tracks,
++                audioIndex = 2,
++                subtitleIndex = -1,
++                source = source,
++                selectAudio = true,
++                selectSubtitle = false,
++            )
++
++        Assert.assertTrue(result.audioSelected)
++        Assert.assertEquals("2", result.trackSelectionParameters.getAudioOverride()?.id)
++        Assert.assertEquals("4", result.trackSelectionParameters.getSubtitleOverride()?.id)
++    }
++
++    @Test
++    fun `subtitle-only change preserves audio override in shared groups`() {
++        val source =
++            TestTracks
++                .Builder()
++                .addVideo()
++                .addAudio(2)
++                .addSubtitle(2)
++                .buildMediaSourceInfo()
++        val audioFormats =
++            arrayOf(
++                Format.Builder().setId("1").setLanguage("ita").setSampleMimeType("audio/aac").build(),
++                Format.Builder().setId("2").setLanguage("eng").setSampleMimeType("audio/aac").build(),
++            )
++        val subtitleFormats =
++            arrayOf(
++                Format.Builder().setId("3").setLanguage("ita").setSampleMimeType("text/vtt").build(),
++                Format.Builder().setId("4").setLanguage("eng").setSampleMimeType("text/vtt").build(),
++            )
++        val audioGroup = TrackGroup(*audioFormats)
++        val subtitleGroup = TrackGroup(*subtitleFormats)
++        val tracks =
++            Tracks(
++                listOf(
++                    Tracks.Group(audioGroup, false, intArrayOf(C.FORMAT_HANDLED, C.FORMAT_HANDLED), booleanArrayOf(false, false)),
++                    Tracks.Group(subtitleGroup, false, intArrayOf(C.FORMAT_HANDLED, C.FORMAT_HANDLED), booleanArrayOf(false, false)),
++                ),
++            )
++        val existing =
++            TrackSelectionParameters.Builder()
++                .setOverrideForType(TrackSelectionOverride(audioGroup, 1))
++                .build()
++
++        val result =
++            TrackSelectionUtils.createTrackSelections(
++                trackSelectionParams = existing,
++                tracks = tracks,
++                audioIndex = 2,
++                subtitleIndex = 4,
++                source = source,
++                selectAudio = false,
++                selectSubtitle = true,
++            )
++
++        Assert.assertTrue(result.subtitleSelected)
++        Assert.assertEquals("2", result.trackSelectionParameters.getAudioOverride()?.id)
++        Assert.assertEquals("4", result.trackSelectionParameters.getSubtitleOverride()?.id)
++    }
++
+ }
